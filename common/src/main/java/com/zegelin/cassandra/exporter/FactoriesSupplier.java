@@ -6,7 +6,6 @@ import com.zegelin.cassandra.exporter.MBeanGroupMetricFamilyCollector.Factory;
 import com.zegelin.cassandra.exporter.cli.HarvesterOptions;
 import com.zegelin.cassandra.exporter.collector.CachingCollector;
 import com.zegelin.cassandra.exporter.collector.FailureDetectorMBeanMetricFamilyCollector;
-import com.zegelin.cassandra.exporter.collector.LatencyMetricGroupSummaryCollector;
 import com.zegelin.cassandra.exporter.collector.StorageServiceMBeanMetricFamilyCollector;
 import com.zegelin.cassandra.exporter.collector.dynamic.FunctionalMetricFamilyCollector;
 import com.zegelin.cassandra.exporter.collector.jvm.*;
@@ -502,11 +501,29 @@ public class FactoriesSupplier implements Supplier<List<Factory>> {
         };
     }
 
+    private static FactoryBuilder.CollectorConstructor timerAsHistogramCollectorConstructor() {
+        return (name, help, labels, mBean) -> {
+            final NamedObject<SamplingCounting> samplingCountingNamedObject = CassandraMetricsUtilities.jmxTimerMBeanAsSamplingCounting(mBean);
+
+            return new FunctionalMetricFamilyCollector<>(name, help, ImmutableMap.of(labels, samplingCountingNamedObject),
+                    samplingAndCountingAsHistogram(MetricValueConversionFunctions::nanosecondsToSeconds));
+        };
+    }
+
     private static FactoryBuilder.CollectorConstructor histogramAsSummaryCollectorConstructor() {
         return (name, help, labels, mBean) -> {
             final NamedObject<SamplingCounting> samplingCountingNamedObject = CassandraMetricsUtilities.jmxHistogramAsSamplingCounting(mBean);
 
             return new FunctionalMetricFamilyCollector<>(name, help, ImmutableMap.of(labels, samplingCountingNamedObject), samplingAndCountingAsSummary());
+        };
+    }
+
+    private static FactoryBuilder.CollectorConstructor histogramAsHistogramCollectorConstructor() {
+        return (name, help, labels, mBean) -> {
+            final NamedObject<SamplingCounting> samplingCountingNamedObject = CassandraMetricsUtilities.jmxHistogramAsSamplingCounting(mBean);
+
+            return new FunctionalMetricFamilyCollector<>(name, help, ImmutableMap.of(labels, samplingCountingNamedObject),
+                    samplingAndCountingAsHistogram(MetricValueConversionFunctions::nanosecondsToSeconds));
         };
     }
 
@@ -590,8 +607,7 @@ public class FactoriesSupplier implements Supplier<List<Factory>> {
             builder.add(clientRequestMetricFactory(functionalCollectorConstructor(meterAsCounter()), "Unavailables", "unavailable_exceptions_total", "Total number of UnavailableExceptions thrown (since server start)."));
             builder.add(clientRequestMetricFactory(functionalCollectorConstructor(meterAsCounter()), "Failures", "failures_total", "Total number of failed requests (since server start)."));
 
-            builder.add(clientRequestMetricFactory(LatencyMetricGroupSummaryCollector::collectorForMBean, "Latency", "latency_seconds", "Request latency."));
-            builder.add(clientRequestMetricFactory(LatencyMetricGroupSummaryCollector::collectorForMBean, "TotalLatency", "latency_seconds", "Total request duration."));
+            builder.add(clientRequestMetricFactory(timerAsHistogramCollectorConstructor(), "Latency", "latency_seconds", "Request latency."));
         }
 
 
@@ -706,15 +722,12 @@ public class FactoriesSupplier implements Supplier<List<Factory>> {
             builder.addAll(tableMetricFactory(functionalCollectorConstructor(histogramGaugeAsSummary()), "EstimatedColumnCountHistogram", "estimated_columns", null));
 
             builder.addAll(tableMetricFactory(histogramAsSummaryCollectorConstructor(), "SSTablesPerReadHistogram", "sstables_per_read", null));
-//
-            builder.addAll(tableMetricFactory(LatencyMetricGroupSummaryCollector::collectorForMBean, "ReadLatency", "operation_latency_seconds", null, ImmutableMap.of("operation", "read")));
-            builder.addAll(tableMetricFactory(LatencyMetricGroupSummaryCollector::collectorForMBean, "ReadTotalLatency", "operation_latency_seconds", null, ImmutableMap.of("operation", "read")));
 
-            builder.addAll(tableMetricFactory(LatencyMetricGroupSummaryCollector::collectorForMBean, "RangeLatency", "operation_latency_seconds", null, ImmutableMap.of("operation", "range_read")));
-            builder.addAll(tableMetricFactory(LatencyMetricGroupSummaryCollector::collectorForMBean, "RangeTotalLatency", "operation_latency_seconds", null, ImmutableMap.of("operation", "range_read")));
+            builder.addAll(tableMetricFactory(timerAsHistogramCollectorConstructor(), "ReadLatency", "operation_latency_seconds", null, ImmutableMap.of("operation", "read")));
 
-            builder.addAll(tableMetricFactory(LatencyMetricGroupSummaryCollector::collectorForMBean, "WriteLatency", "operation_latency_seconds", null, ImmutableMap.of("operation", "write")));
-            builder.addAll(tableMetricFactory(LatencyMetricGroupSummaryCollector::collectorForMBean, "WriteTotalLatency", "operation_latency_seconds", null, ImmutableMap.of("operation", "write")));
+            builder.addAll(tableMetricFactory(timerAsHistogramCollectorConstructor(), "RangeLatency", "operation_latency_seconds", null, ImmutableMap.of("operation", "range_read")));
+
+            builder.addAll(tableMetricFactory(timerAsHistogramCollectorConstructor(), "WriteLatency", "operation_latency_seconds", null, ImmutableMap.of("operation", "write")));
 
             builder.addAll(tableMetricFactory(TABLE_SCOPE, functionalCollectorConstructor(counterAsGauge()), "PendingFlushes", "pending_flushes", null));
             builder.addAll(tableMetricFactory(KEYSPACE_NODE_SCOPE, functionalCollectorConstructor(numericGaugeAsGauge()), "PendingFlushes", "pending_flushes", null));
@@ -766,14 +779,11 @@ public class FactoriesSupplier implements Supplier<List<Factory>> {
             builder.addAll(tableMetricFactory(TABLE_SCOPE, functionalCollectorConstructor(counterAsGauge()), "RowCacheMiss", "row_cache_misses", null, ImmutableMap.of("miss_type", "miss")));
             builder.addAll(tableMetricFactory(KEYSPACE_NODE_SCOPE, functionalCollectorConstructor(numericGaugeAsGauge()), "RowCacheMiss", "row_cache_misses", null, ImmutableMap.of("miss_type", "miss")));
 
-            builder.addAll(tableMetricFactory(LatencyMetricGroupSummaryCollector::collectorForMBean, "CasPrepareLatency", "operation_latency_seconds", null, ImmutableMap.of("operation", "cas_prepare")));
-            builder.addAll(tableMetricFactory(LatencyMetricGroupSummaryCollector::collectorForMBean, "CasPrepareTotalLatency", "operation_latency_seconds", null, ImmutableMap.of("operation", "cas_prepare")));
+            builder.addAll(tableMetricFactory(timerAsHistogramCollectorConstructor(), "CasPrepareLatency", "operation_latency_seconds", null, ImmutableMap.of("operation", "cas_prepare")));
 
-            builder.addAll(tableMetricFactory(LatencyMetricGroupSummaryCollector::collectorForMBean, "CasProposeLatency", "operation_latency_seconds", null, ImmutableMap.of("operation", "cas_propose")));
-            builder.addAll(tableMetricFactory(LatencyMetricGroupSummaryCollector::collectorForMBean, "CasProposeTotalLatency", "operation_latency_seconds", null, ImmutableMap.of("operation", "cas_propose")));
+            builder.addAll(tableMetricFactory(timerAsHistogramCollectorConstructor(), "CasProposeLatency", "operation_latency_seconds", null, ImmutableMap.of("operation", "cas_propose")));
 
-            builder.addAll(tableMetricFactory(LatencyMetricGroupSummaryCollector::collectorForMBean, "CasCommitLatency", "operation_latency_seconds", null, ImmutableMap.of("operation", "cas_commit")));
-            builder.addAll(tableMetricFactory(LatencyMetricGroupSummaryCollector::collectorForMBean, "CasCommitTotalLatency", "operation_latency_seconds", null, ImmutableMap.of("operation", "cas_commit")));
+            builder.addAll(tableMetricFactory(timerAsHistogramCollectorConstructor(), "CasCommitLatency", "operation_latency_seconds", null, ImmutableMap.of("operation", "cas_commit")));
 
             builder.addAll(tableMetricFactory(functionalCollectorConstructor(numericGaugeAsGauge(MetricValueConversionFunctions::percentToRatio)), "PercentRepaired", "repaired_ratio", null));
 
